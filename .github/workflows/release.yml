@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to build (e.g. v0.1.0)
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN: xrocmtop
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # glibc dynamic build — broadest compatibility on mainstream distros.
+          - target: x86_64-unknown-linux-gnu
+          # musl static build — single self-contained binary, runs anywhere.
+          - target: x86_64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl tools
+        if: endsWith(matrix.target, '-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build release
+        run: cargo build --release --locked --target "${{ matrix.target }}"
+
+      - name: Package
+        id: package
+        env:
+          TARGET: ${{ matrix.target }}
+          # ref_name is the tag for tag pushes; fall back to the manual input.
+          REF: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          staging="${BIN}-${REF}-${TARGET}"
+          mkdir "$staging"
+          cp "target/${TARGET}/release/${BIN}" "$staging/"
+          cp README.md SPEC.md LICENSE "$staging/" 2>/dev/null || true
+          tar czf "${staging}.tar.gz" "$staging"
+          sha256sum "${staging}.tar.gz" > "${staging}.tar.gz.sha256"
+          echo "asset=${staging}.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "checksum=${staging}.tar.gz.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            ${{ steps.package.outputs.asset }}
+            ${{ steps.package.outputs.checksum }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    # Only publish a release for real tag pushes, not manual dispatch dry-runs.
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+          generate_release_notes: true
+          fail_on_unmatched_files: true

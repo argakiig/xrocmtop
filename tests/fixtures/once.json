@@ -1,0 +1,50 @@
+{
+  "gpus": [
+    {
+      "index": 0,
+      "name": "Radeon 8060S Graphics",
+      "device_id": "0x1586",
+      "vbios": "113-STRXLGEN-001",
+      "busy_pct": 42,
+      "mem": {
+        "vram_total": 103079215104,
+        "vram_used": 51539607552,
+        "gtt_total": 16368283648,
+        "gtt_used": 2118324224
+      },
+      "temp_c": 42.0,
+      "power_w": 27.1,
+      "clocks": {
+        "sclk_mhz": 2900,
+        "mclk_mhz": 937,
+        "fclk_mhz": 2000,
+        "socclk_mhz": 1472
+      }
+    }
+  ],
+  "processes": {
+    "hidden": 3,
+    "list": [
+      {
+        "pid": 693842,
+        "name": "llama-server",
+        "cmdline": null,
+        "mem_bytes": 31086206976,
+        "vram_bytes": 30000000000,
+        "gtt_bytes": 1086206976,
+        "gfx_pct": null,
+        "compute_pct": null,
+        "enc_pct": null,
+        "dec_pct": null,
+        "clients": []
+      }
+    ]
+  },
+  "vulkan": {
+    "device_name": "Radeon 8060S Graphics (RADV STRIX_HALO)",
+    "driver_name": "radv",
+    "driver_info": "Mesa 26.0.3-1ubuntu1",
+    "api_version": "1.4.335",
+    "heaps_bytes": []
+  }
+}

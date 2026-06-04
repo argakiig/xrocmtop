@@ -1,0 +1,39 @@
+{
+  "$schema": "https://schema.khronos.org/vulkan/profiles-0.8.2-276.json#",
+  "comment": "TRIMMED fixture. Captured on the Strix Halo probe machine with `vulkaninfo --json=/tmp/vk2.json` (Vulkan Profiles schema; full file ~390 KB). Only the JSON paths xrocmtop's parser reads are kept: capabilities.device.properties.{VkPhysicalDeviceProperties.deviceName,apiVersion; VkPhysicalDeviceVulkan12Properties.driverName,driverInfo}. The live profiles output omits memory heaps, so a realistic VkPhysicalDeviceMemoryProperties.memoryHeaps block (real sizes from `vulkaninfo --text`) was added under the device node so the heap parser is exercised; older/other vulkaninfo schemas emit this block.",
+  "capabilities": {
+    "device": {
+      "properties": {
+        "VkPhysicalDeviceProperties": {
+          "comment": "apiVersion 4211023 decodes via VK_VERSION macros to 1.4.335",
+          "apiVersion": 4211023,
+          "driverVersion": 105385984,
+          "vendorID": 4098,
+          "deviceID": 5450,
+          "deviceType": "VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU",
+          "deviceName": "Radeon 8060S Graphics (RADV STRIX_HALO)"
+        },
+        "VkPhysicalDeviceVulkan11Properties": {
+          "driverUUID": [65, 77, 68, 45, 77, 69, 83, 65, 45, 68, 82, 86, 0, 0, 0, 0]
+        },
+        "VkPhysicalDeviceVulkan12Properties": {
+          "driverID": "VK_DRIVER_ID_MESA_RADV",
+          "driverName": "radv",
+          "driverInfo": "Mesa 26.0.3-1ubuntu1"
+        }
+      },
+      "VkPhysicalDeviceMemoryProperties": {
+        "memoryHeaps": [
+          {
+            "size": 39815831552,
+            "flags": []
+          },
+          {
+            "size": 79631667200,
+            "flags": ["MEMORY_HEAP_DEVICE_LOCAL_BIT"]
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,26 @@
+[package]
+name = "xrocmtop"
+version = "0.1.0"
+edition = "2021"
+description = "A btop-style terminal UI for monitoring AMD ROCm / Vulkan GPUs"
+license = "MIT"
+readme = "README.md"
+
+[[bin]]
+name = "xrocmtop"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+anyhow = "1.0"
+thiserror = "2.0"
+
+[profile.release]
+strip = true
+lto = "thin"
+overflow-checks = true

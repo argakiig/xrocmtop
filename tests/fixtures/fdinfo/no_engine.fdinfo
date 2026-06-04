@@ -1,0 +1,17 @@
+pos:	0
+flags:	02100002
+mnt_id:	40
+ino:	889
+drm-driver:	amdgpu
+drm-client-id:	42001
+drm-pdev:	0000:c5:00.0
+pasid:	12345
+drm-total-gtt:	65536 KiB
+drm-resident-gtt:	65536 KiB
+drm-total-vram:	131072 KiB
+drm-resident-vram:	131072 KiB
+drm-memory-vram:	131072 KiB
+drm-memory-gtt: 	65536 KiB
+drm-memory-cpu: 	0 KiB
+amd-requested-vram:	131072 KiB
+amd-requested-gtt:	65536 KiB
