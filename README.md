@@ -177,6 +177,10 @@ the test suite, and a release build on every push and pull request. Pushing a `v
 `.github/workflows/release.yml`, which builds stripped glibc + static-musl binaries and publishes
 them to a GitHub Release.
 
+Contributions welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md) for the boundaries, the
+pre-commit gate, and the real-hardware fixture rule. Notable changes are recorded in
+[`CHANGELOG.md`](CHANGELOG.md).
+
 ## Scope (v1)
 
 AMD/`amdgpu` only; local machine only. Not in scope: NVIDIA/Intel, remote/fleet monitoring,
