@@ -6,13 +6,15 @@
 //! through ratatui's `TestBackend`, including the "unavailable" case (no node / unsupported
 //! revision). Every value falls back to a dimmed "n/a" rather than panicking.
 
+use std::time::Instant;
+
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
-use crate::model::{GpuSnapshot, Metrics};
+use crate::model::{fmt_duration, GpuSnapshot, Metrics, ThermalEvent};
 use crate::theme::Theme;
 
 /// Width of the left label column.
@@ -40,6 +42,141 @@ pub fn render_metrics(
         .style(Style::default().fg(theme.text))
         .block(block);
     frame.render_widget(para, area);
+}
+
+/// Width of the relative-time column in the events list ("just now", "12m ago", …).
+const AGE_W: usize = 10;
+/// Width of the plain-English reason column.
+const REASON_W: usize = 26;
+
+/// Render the scrollable "Thermal events" list — the human-readable history of throttling
+/// episodes. `events` is newest-first; `scroll` is the row offset from the top; `show_gpu` adds a
+/// "GPU n" tag when more than one card is present. Pure layout lives in [`thermal_event_lines`].
+pub fn render_thermal_events(
+    frame: &mut Frame,
+    area: Rect,
+    events: &[&ThermalEvent],
+    scroll: usize,
+    show_gpu: bool,
+    theme: &Theme,
+    focused: bool,
+) {
+    let border = if focused { theme.focus } else { theme.border };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border))
+        .title(format!(" Thermal events ({}) ", events.len()))
+        .title_style(
+            Style::default()
+                .fg(theme.title)
+                .add_modifier(Modifier::BOLD),
+        );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let lines = thermal_event_lines(
+        events,
+        scroll,
+        inner.height as usize,
+        show_gpu,
+        Instant::now(),
+        theme,
+    );
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().fg(theme.text)),
+        inner,
+    );
+}
+
+/// Build the events-list lines for a viewport of `rows` height, applying `scroll` and adding
+/// overflow hints ("↑ N newer" / "↓ N older") when episodes fall outside the window. Pure and
+/// fully testable; `now` is injected so relative times are deterministic.
+fn thermal_event_lines(
+    events: &[&ThermalEvent],
+    scroll: usize,
+    rows: usize,
+    show_gpu: bool,
+    now: Instant,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    if events.is_empty() {
+        return vec![Line::from(Span::styled(
+            "No throttling recorded this session.",
+            Style::default().fg(theme.dim),
+        ))];
+    }
+    if rows == 0 {
+        return Vec::new();
+    }
+
+    let total = events.len();
+    let scroll = scroll.min(total - 1);
+    // Reserve a row for the top hint when episodes are hidden above the window, and one for the
+    // bottom hint when more remain below than fit in what's left.
+    let top_hint = scroll > 0;
+    let avail = rows.saturating_sub(top_hint as usize);
+    let remaining = total - scroll;
+    let bottom_hint = remaining > avail;
+    let shown = if bottom_hint {
+        avail.saturating_sub(1)
+    } else {
+        remaining.min(avail)
+    };
+
+    let mut lines = Vec::with_capacity(rows);
+    if top_hint {
+        lines.push(hint_line(format!("↑ {scroll} newer"), theme));
+    }
+    for ev in &events[scroll..scroll + shown] {
+        lines.push(event_line(ev, show_gpu, now, theme));
+    }
+    if bottom_hint {
+        let older = total - scroll - shown;
+        lines.push(hint_line(format!("↓ {older} older"), theme));
+    }
+    lines
+}
+
+/// One episode row: "`<age> ago   <reason>   ongoing|lasted <dur>`". Ongoing episodes are
+/// highlighted in the accent color so an active throttle stands out.
+fn event_line(ev: &ThermalEvent, show_gpu: bool, now: Instant, theme: &Theme) -> Line<'static> {
+    let age = ev.age(now);
+    let when = if age.as_secs() == 0 {
+        "just now".to_string()
+    } else {
+        format!("{} ago", fmt_duration(age))
+    };
+
+    let reason = if show_gpu {
+        format!("GPU {} {}", ev.gpu_index, ev.source.label())
+    } else {
+        ev.source.label().to_string()
+    };
+
+    let (status, status_style) = match ev.duration() {
+        None => (
+            "ongoing".to_string(),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Some(d) => (
+            format!("lasted {}", fmt_duration(d)),
+            Style::default().fg(theme.dim),
+        ),
+    };
+
+    Line::from(vec![
+        Span::styled(format!("{when:<AGE_W$}"), Style::default().fg(theme.text)),
+        Span::styled(
+            format!("{reason:<REASON_W$}"),
+            Style::default().fg(theme.text),
+        ),
+        Span::styled(status, status_style),
+    ])
+}
+
+fn hint_line(text: String, theme: &Theme) -> Line<'static> {
+    Line::from(Span::styled(text, Style::default().fg(theme.dim)))
 }
 
 /// Build the panel's lines. Pure and exhaustively testable.
@@ -268,5 +405,119 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect();
         assert!(text.contains("STAPM n/a"));
+    }
+
+    // --- Thermal events section ---
+
+    use crate::model::{ThermalEvent, ThrottleSource};
+    use std::time::Duration;
+
+    fn lines_text(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn ev(gpu: usize, src: ThrottleSource, start: Instant, end: Option<Instant>) -> ThermalEvent {
+        ThermalEvent {
+            gpu_index: gpu,
+            source: src,
+            started: start,
+            ended: end,
+        }
+    }
+
+    #[test]
+    fn empty_log_shows_placeholder() {
+        let lines = thermal_event_lines(&[], 0, 5, false, Instant::now(), &Theme::default());
+        assert!(lines_text(&lines).contains("No throttling recorded this session."));
+    }
+
+    #[test]
+    fn ongoing_and_closed_render_plain_english() {
+        let now = Instant::now();
+        let start = now - Duration::from_secs(120);
+        let ongoing = ev(0, ThrottleSource::ThmGfx, start, None);
+        let closed = ev(
+            0,
+            ThrottleSource::Sppt,
+            now - Duration::from_secs(300),
+            Some(now - Duration::from_secs(294)),
+        );
+        let refs = [&ongoing, &closed];
+        let lines = thermal_event_lines(&refs, 0, 10, false, now, &Theme::default());
+        let text = lines_text(&lines);
+        assert!(text.contains("GPU too hot"), "plain-English label");
+        assert!(text.contains("Power limit (sustained)"));
+        assert!(text.contains("2m ago"), "relative start time");
+        assert!(text.contains("ongoing"), "active episode flagged");
+        assert!(text.contains("lasted 6s"), "closed episode shows duration");
+    }
+
+    #[test]
+    fn multi_gpu_prefixes_gpu_index() {
+        let now = Instant::now();
+        let e = ev(
+            1,
+            ThrottleSource::ThmGfx,
+            now - Duration::from_secs(5),
+            None,
+        );
+        let refs = [&e];
+        let with = thermal_event_lines(&refs, 0, 5, true, now, &Theme::default());
+        let without = thermal_event_lines(&refs, 0, 5, false, now, &Theme::default());
+        assert!(lines_text(&with).contains("GPU 1 GPU too hot"));
+        assert!(!lines_text(&without).contains("GPU 1"));
+    }
+
+    #[test]
+    fn overflow_shows_hints_and_scrolls() {
+        let now = Instant::now();
+        // 10 closed episodes, newest-first.
+        let owned: Vec<ThermalEvent> = (0..10)
+            .map(|i| {
+                let s = now - Duration::from_secs((100 - i) as u64);
+                ev(0, ThrottleSource::Spl, s, Some(s + Duration::from_secs(1)))
+            })
+            .collect();
+        let refs: Vec<&ThermalEvent> = owned.iter().collect();
+        // Window of 4 rows, scrolled down by 3 → both hints present.
+        let lines = thermal_event_lines(&refs, 3, 4, false, now, &Theme::default());
+        let text = lines_text(&lines);
+        assert!(text.contains("↑ 3 newer"), "rows hidden above");
+        assert!(text.contains("older"), "rows hidden below");
+        assert_eq!(lines.len(), 4, "fills exactly the viewport");
+    }
+
+    #[test]
+    fn scroll_past_end_is_clamped_without_panic() {
+        let now = Instant::now();
+        let e = ev(0, ThrottleSource::Spl, now, Some(now));
+        let refs = [&e];
+        // Absurd scroll offset must not panic and still renders the single event.
+        let lines = thermal_event_lines(&refs, 999, 5, false, now, &Theme::default());
+        assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn renders_through_backend_without_panic() {
+        let now = Instant::now();
+        let e = ev(
+            0,
+            ThrottleSource::ThmGfx,
+            now - Duration::from_secs(3),
+            None,
+        );
+        let refs = [&e];
+        let mut term = Terminal::new(TestBackend::new(60, 8)).unwrap();
+        term.draw(|f| render_thermal_events(f, f.area(), &refs, 0, false, &Theme::default(), true))
+            .unwrap();
+        let buf = term.backend().buffer().clone();
+        let out: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(out.contains("Thermal events"));
+        assert!(out.contains("GPU too hot"));
     }
 }

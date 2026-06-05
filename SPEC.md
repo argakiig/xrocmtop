@@ -180,6 +180,13 @@ source reads as active only while its counter advances. The decoder is header-di
 struct's revision (v3_0 today) and validates layout against a committed binary fixture; unsupported
 revisions and absent fields render `n/a`. Decoded values also appear in the `--once --json` output.
 
+Below the per-GPU metrics the panel carries a scrollable **Thermal events** log: each time a
+throttle source starts, an episode opens with a plain-English reason ("GPU too hot", "Power limit
+(sustained)", …) and a relative start time; when it stops, the row stamps a duration ("lasted 6s")
+— still-active episodes read "ongoing". The log is session-only (an in-memory ring buffer, never
+written to disk and absent from `--once --json`) and scrolls with `↑`/`↓`/`j`/`k` and `PgUp`/`PgDn`
+while the Metrics panel is focused.
+
 ### Per-process table & detail
 One row per process holding an amdgpu DRM handle, de-duplicated per `(pid, drm-client-id)`.
 Columns are width-aware (`PID · Process · VRAM · GTT · GFX · COM`, dropping GTT → compute →

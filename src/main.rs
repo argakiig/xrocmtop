@@ -12,6 +12,7 @@ mod panel;
 mod report;
 mod settings;
 mod theme;
+mod thermal;
 mod ui;
 
 use std::io::{self, Stdout};

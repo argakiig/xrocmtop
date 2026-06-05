@@ -25,10 +25,11 @@ use crate::collect::sysfs::{self, SysfsGpu};
 use crate::collect::{process, vulkan};
 use crate::config::Config;
 use crate::history::GpuHistory;
-use crate::model::{EngineNs, GpuSnapshot, Opt, ProcInfo, Throttle, VulkanInfo};
+use crate::model::{EngineNs, GpuSnapshot, Opt, ProcInfo, ThermalEvent, Throttle, VulkanInfo};
 use crate::panel::{PanelKind, PanelLayout};
 use crate::settings::Settings;
 use crate::theme::Theme;
+use crate::thermal::ThermalLog;
 
 /// Re-run `rocm-smi` every N ticks. At the default 1 s interval this is ~every 5 s.
 const SMI_EVERY_TICKS: u64 = 5;
@@ -37,6 +38,10 @@ const SMI_EVERY_TICKS: u64 = 5;
 /// 1 s interval refreshing the process table ~every 3 s keeps the hot path cheap. In-between ticks
 /// carry the prior rows forward (re-sorting only).
 const PROC_EVERY_TICKS: u64 = 3;
+
+/// Rows the thermal-events list jumps per PageUp/PageDown (the viewport height isn't known in the
+/// key handler, so a fixed page keeps scrolling predictable).
+const EVENTS_PAGE: isize = 10;
 
 /// Sort order for the process table, cycled with the `s` key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +92,10 @@ pub struct App {
     /// Previous throttle-residency counters per card index, for deriving which sources are
     /// actively throttling (a counter that advanced between two ticks).
     prev_throttle: BTreeMap<usize, Throttle>,
+    /// Session-long history of throttling episodes, shown in the Metrics panel.
+    thermal: ThermalLog,
+    /// Scroll offset (rows from the top, newest-first) into the thermal-events list.
+    events_scroll: usize,
     /// Wall-clock instant of the previous process walk, for the engine-utilization denominator.
     last_proc_walk: Option<Instant>,
     /// Index of the highlighted process row (clamped to the current list).
@@ -147,6 +156,8 @@ impl App {
             procs_hidden: 0,
             engine_sampler: EngineSampler::new(),
             prev_throttle: BTreeMap::new(),
+            thermal: ThermalLog::new(),
+            events_scroll: 0,
             last_proc_walk: None,
             proc_selected: 0,
             proc_detail_open: false,
@@ -198,6 +209,8 @@ impl App {
             procs_hidden: 0,
             engine_sampler: EngineSampler::new(),
             prev_throttle: BTreeMap::new(),
+            thermal: ThermalLog::new(),
+            events_scroll: 0,
             last_proc_walk: None,
             proc_selected: 0,
             proc_detail_open: false,
@@ -293,19 +306,21 @@ impl App {
     /// the previous tick's, then record the current counters for next time. The first sample for a
     /// card has no baseline, so it reports nothing until the following tick.
     fn derive_throttle(&mut self) {
+        let now = Instant::now();
         for snap in self.snapshots.iter_mut() {
-            let Some(m) = snap.metrics.as_mut() else {
-                continue;
+            let index = snap.index;
+            // Sources active this tick: empty when the card reports no metrics or has no prior
+            // sample. Feeding the empty set to the log still matters — it closes any episode that
+            // was open for this card when its metrics vanished.
+            let active = match (snap.metrics.as_ref(), self.prev_throttle.get(&index)) {
+                (Some(m), Some(prev)) => m.throttle.active_sources_since(prev),
+                _ => Vec::new(),
             };
-            if let Some(prev) = self.prev_throttle.get(&snap.index) {
-                m.throttle_active = m
-                    .throttle
-                    .active_since(prev)
-                    .into_iter()
-                    .map(String::from)
-                    .collect();
+            if let Some(m) = snap.metrics.as_mut() {
+                m.throttle_active = active.iter().map(|s| s.code().to_string()).collect();
+                self.prev_throttle.insert(index, m.throttle.clone());
             }
-            self.prev_throttle.insert(snap.index, m.throttle.clone());
+            self.thermal.observe(index, &active, now);
         }
     }
 
@@ -367,6 +382,21 @@ impl App {
         self.panels.is_focused(PanelKind::Processes)
     }
 
+    /// Whether the Metrics panel currently holds focus (gates thermal-events scrolling).
+    fn metrics_panel_focused(&self) -> bool {
+        self.panels.is_focused(PanelKind::Metrics)
+    }
+
+    /// Scroll the thermal-events list by `delta` rows (newest-first), clamped so at least one
+    /// event stays in view. The viewport height isn't known here, so the render side trims the
+    /// window; this only bounds the offset to the event count.
+    fn scroll_events(&mut self, delta: isize) {
+        let max = self.thermal.len().saturating_sub(1) as isize;
+        self.events_scroll = (self.events_scroll as isize)
+            .saturating_add(delta)
+            .clamp(0, max) as usize;
+    }
+
     /// Move the highlight up one row (saturating at the top).
     fn select_prev(&mut self) {
         self.proc_selected = self.proc_selected.saturating_sub(1);
@@ -400,6 +430,16 @@ impl App {
     /// The process row the detail popup should render, if any.
     pub fn selected_proc(&self) -> Option<&ProcInfo> {
         self.procs.get(self.proc_selected)
+    }
+
+    /// Throttling episodes for the Metrics panel, newest-first (ongoing episodes lead).
+    pub fn thermal_events(&self) -> Vec<&ThermalEvent> {
+        self.thermal.newest_first()
+    }
+
+    /// Scroll offset (newest-first rows from the top) into the thermal-events list.
+    pub fn events_scroll(&self) -> usize {
+        self.events_scroll
     }
 
     /// Whether the help overlay is shown.
@@ -444,6 +484,20 @@ impl App {
             }
             (KeyCode::Enter, _) if self.proc_panel_focused() && !self.procs.is_empty() => {
                 self.proc_detail_open = true
+            }
+            // Thermal-events scrolling — only while the Metrics panel is focused, mirroring the
+            // Processes navigation so the same keys never collide across panels.
+            (KeyCode::Up, _) | (KeyCode::Char('k'), _) if self.metrics_panel_focused() => {
+                self.scroll_events(-1)
+            }
+            (KeyCode::Down, _) | (KeyCode::Char('j'), _) if self.metrics_panel_focused() => {
+                self.scroll_events(1)
+            }
+            (KeyCode::PageUp, _) if self.metrics_panel_focused() => {
+                self.scroll_events(-EVENTS_PAGE)
+            }
+            (KeyCode::PageDown, _) if self.metrics_panel_focused() => {
+                self.scroll_events(EVENTS_PAGE)
             }
             (KeyCode::Char('p'), _) => self.paused = !self.paused,
             (KeyCode::Char('s'), _) => {
@@ -654,6 +708,62 @@ mod tests {
         }
         a.on_key(key(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(a.proc_selected(), 0, "navigation gated on panel focus");
+    }
+
+    /// Cycle panel focus until the Metrics panel is focused.
+    fn focus_metrics(a: &mut App) {
+        for _ in 0..8 {
+            if a.metrics_panel_focused() {
+                return;
+            }
+            a.panels.focus_next();
+        }
+        panic!("could not focus Metrics panel");
+    }
+
+    /// Add `n` distinct closed throttle episodes to the thermal log.
+    fn add_events(a: &mut App, n: usize) {
+        use crate::model::ThrottleSource;
+        use std::time::Duration;
+        let t0 = Instant::now();
+        for i in 0..n as u64 {
+            a.thermal
+                .observe(0, &[ThrottleSource::Spl], t0 + Duration::from_secs(i * 2));
+            a.thermal
+                .observe(0, &[], t0 + Duration::from_secs(i * 2 + 1));
+        }
+    }
+
+    #[test]
+    fn events_scroll_moves_and_clamps_when_metrics_focused() {
+        let mut a = app();
+        add_events(&mut a, 5);
+        focus_metrics(&mut a);
+        assert_eq!(a.events_scroll(), 0);
+        a.on_key(key(KeyCode::Down, KeyModifiers::NONE));
+        a.on_key(key(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(a.events_scroll(), 2);
+        // PageDown jumps a page but clamps to the last event (len - 1 = 4).
+        a.on_key(key(KeyCode::PageDown, KeyModifiers::NONE));
+        assert_eq!(a.events_scroll(), 4);
+        // Up / k step back; PageUp saturates at the top.
+        a.on_key(key(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert_eq!(a.events_scroll(), 3);
+        a.on_key(key(KeyCode::PageUp, KeyModifiers::NONE));
+        assert_eq!(a.events_scroll(), 0);
+    }
+
+    #[test]
+    fn events_scroll_ignored_when_metrics_not_focused() {
+        let mut a = app();
+        add_events(&mut a, 5);
+        // Ensure some other panel holds focus.
+        while a.metrics_panel_focused() {
+            a.panels.focus_next();
+        }
+        a.on_key(key(KeyCode::Down, KeyModifiers::NONE));
+        a.on_key(key(KeyCode::PageDown, KeyModifiers::NONE));
+        assert_eq!(a.events_scroll(), 0, "scrolling gated on Metrics focus");
     }
 
     #[test]

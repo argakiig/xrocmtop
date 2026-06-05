@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Thermal events log** — the SMU Metrics panel now records per-source throttle episodes from `gpu_metrics` and displays them as a scrollable session log with plain-English reasons, relative start times, and durations. Active episodes show `ongoing`; the buffer is in-memory only and is not emitted by `--once --json`. The log scrolls while the Metrics panel is focused using `↑`/`↓`/`j`/`k` and `PgUp`/`PgDn`.
+
 ## [0.2.0] - 2026-06-04
 
 ### Added
