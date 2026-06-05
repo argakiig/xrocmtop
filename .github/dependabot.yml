@@ -1,0 +1,35 @@
+# Dependabot configuration — keeps Cargo dependencies and GitHub Actions up to date.
+# https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-reference
+version: 2
+updates:
+  # Rust crate dependencies (Cargo.toml / Cargo.lock).
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    # Collapse routine non-breaking bumps into a single PR to cut review noise;
+    # major bumps still arrive as their own PRs.
+    groups:
+      cargo-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # GitHub Actions used by the CI and release workflows.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    groups:
+      actions:
+        update-types:
+          - minor
+          - patch
