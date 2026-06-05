@@ -81,6 +81,28 @@ fn once_json_process_entries_carry_expected_fields() {
 }
 
 #[test]
+fn once_json_omits_session_only_thermal_events() {
+    // The thermal-events log is in-memory and session-scoped; it must never enter the scriptable
+    // snapshot contract (it isn't even Serialize). Guard against an accidental future leak.
+    let out = Command::new(BIN)
+        .args(["--once", "--json"])
+        .output()
+        .expect("run binary");
+    let json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(out.stdout).unwrap()).unwrap();
+    assert!(json.get("thermal_events").is_none());
+    assert!(json.get("events").is_none());
+    if let Some(gpus) = json.get("gpus").and_then(|g| g.as_array()) {
+        for gpu in gpus {
+            assert!(
+                gpu.get("thermal_events").is_none() && gpu.get("events").is_none(),
+                "per-GPU snapshot must not carry the session thermal-events log: {gpu}"
+            );
+        }
+    }
+}
+
+#[test]
 fn once_json_respects_no_procs_and_no_vulkan() {
     let out = Command::new(BIN)
         .args(["--once", "--json", "--no-procs", "--no-vulkan"])

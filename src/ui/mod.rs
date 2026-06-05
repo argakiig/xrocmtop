@@ -55,7 +55,14 @@ fn render_help(frame: &mut Frame, area: Rect, theme: &crate::theme::Theme) {
     let lines = [
         ("Tab", "focus next panel"),
         ("[ ]  ← →", "move focused panel"),
-        ("↑ ↓ / j k", "select process row (Processes focused)"),
+        (
+            "↑ ↓ / j k",
+            "Processes: select row · Metrics: scroll thermal events",
+        ),
+        (
+            "PgUp PgDn",
+            "scroll thermal events a page (Metrics focused)",
+        ),
         ("Enter", "process detail (Esc / any key closes)"),
         ("1 2 3 4 5", "toggle Gauges/Graphs/Metrics/Processes/Vulkan"),
         ("t", "cycle theme"),
@@ -123,8 +130,24 @@ fn render_panel(frame: &mut Frame, kind: PanelKind, area: Rect, app: &App) {
         }
         PanelKind::Metrics => {
             let snaps = app.snapshots();
-            for (snap, row) in snaps.iter().zip(layout::gpu_rows(area, snaps.len())) {
+            // Reserve a strip at the bottom of the cell for the scrollable thermal-events log.
+            let (metrics_area, events_area) = layout::metrics_split(area);
+            for (snap, row) in snaps
+                .iter()
+                .zip(layout::gpu_rows(metrics_area, snaps.len()))
+            {
                 metrics::render_metrics(frame, row, snap, theme, focused);
+            }
+            if let Some(events_area) = events_area {
+                metrics::render_thermal_events(
+                    frame,
+                    events_area,
+                    &app.thermal_events(),
+                    app.events_scroll(),
+                    snaps.len() > 1,
+                    theme,
+                    focused,
+                );
             }
         }
         PanelKind::Processes => processes::render_processes(

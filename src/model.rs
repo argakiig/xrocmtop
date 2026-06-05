@@ -7,6 +7,8 @@
 //!
 //! Memory is stored as raw bytes (`u64`) and only converted to human units at the UI edge.
 
+use std::time::{Duration, Instant};
+
 use serde::Serialize;
 
 /// A metric that may be unsupported on a given device. Renders as "n/a" when `None`.
@@ -137,25 +139,118 @@ pub struct Throttle {
     pub thm_soc: Opt<u32>,
 }
 
+/// One hardware throttle source. The bridge between the raw `gpu_metrics` counter names and the
+/// plain-English labels shown in the thermal-events log. Ordering follows [`ThrottleSource::ALL`]
+/// (declaration order), so it doubles as a stable tie-break for same-tick events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ThrottleSource {
+    /// External PROCHOT assertion.
+    Prochot,
+    /// Socket power limit (SPL).
+    Spl,
+    /// Fast PPT limit.
+    Fppt,
+    /// Slow/sustained PPT limit.
+    Sppt,
+    /// CPU-core thermal limit.
+    ThmCore,
+    /// GFX thermal limit.
+    ThmGfx,
+    /// SoC thermal limit.
+    ThmSoc,
+}
+
+impl ThrottleSource {
+    /// Every source, in the canonical order used for diffing and display.
+    pub const ALL: [ThrottleSource; 7] = [
+        ThrottleSource::Prochot,
+        ThrottleSource::Spl,
+        ThrottleSource::Fppt,
+        ThrottleSource::Sppt,
+        ThrottleSource::ThmCore,
+        ThrottleSource::ThmGfx,
+        ThrottleSource::ThmSoc,
+    ];
+
+    /// Short, everyday-English description of what was being limited — the words a non-expert sees.
+    pub fn label(self) -> &'static str {
+        match self {
+            ThrottleSource::Prochot => "External overheat signal",
+            ThrottleSource::Spl => "Socket power limit",
+            ThrottleSource::Fppt => "Power limit (fast burst)",
+            ThrottleSource::Sppt => "Power limit (sustained)",
+            ThrottleSource::ThmCore => "CPU cores too hot",
+            ThrottleSource::ThmGfx => "GPU too hot",
+            ThrottleSource::ThmSoc => "SoC too hot",
+        }
+    }
+
+    /// The raw counter name as reported by `gpu_metrics` (the token used in `throttle_active`).
+    pub fn code(self) -> &'static str {
+        match self {
+            ThrottleSource::Prochot => "PROCHOT",
+            ThrottleSource::Spl => "SPL",
+            ThrottleSource::Fppt => "FPPT",
+            ThrottleSource::Sppt => "SPPT",
+            ThrottleSource::ThmCore => "THM_CORE",
+            ThrottleSource::ThmGfx => "THM_GFX",
+            ThrottleSource::ThmSoc => "THM_SOC",
+        }
+    }
+}
+
 impl Throttle {
+    /// This source's residency counter in this sample (`None` if the source was absent).
+    pub fn counter(&self, src: ThrottleSource) -> Opt<u32> {
+        match src {
+            ThrottleSource::Prochot => self.prochot,
+            ThrottleSource::Spl => self.spl,
+            ThrottleSource::Fppt => self.fppt,
+            ThrottleSource::Sppt => self.sppt,
+            ThrottleSource::ThmCore => self.thm_core,
+            ThrottleSource::ThmGfx => self.thm_gfx,
+            ThrottleSource::ThmSoc => self.thm_soc,
+        }
+    }
+
     /// The throttle sources whose residency increased from `prev` to `self` — i.e. those active
     /// during the interval between the two samples. A source missing from either sample is skipped.
-    pub fn active_since(&self, prev: &Throttle) -> Vec<&'static str> {
-        let mut active = Vec::new();
-        // A source is active when both samples have a value and the residency advanced.
-        let mut check = |name, old: Opt<u32>, cur: Opt<u32>| {
-            if matches!((old, cur), (Some(p), Some(c)) if c > p) {
-                active.push(name);
-            }
-        };
-        check("PROCHOT", prev.prochot, self.prochot);
-        check("SPL", prev.spl, self.spl);
-        check("FPPT", prev.fppt, self.fppt);
-        check("SPPT", prev.sppt, self.sppt);
-        check("THM_CORE", prev.thm_core, self.thm_core);
-        check("THM_GFX", prev.thm_gfx, self.thm_gfx);
-        check("THM_SOC", prev.thm_soc, self.thm_soc);
-        active
+    /// The app maps these to `throttle_active` tokens (via [`ThrottleSource::code`]) and feeds them
+    /// to the thermal-events log.
+    pub fn active_sources_since(&self, prev: &Throttle) -> Vec<ThrottleSource> {
+        ThrottleSource::ALL
+            .into_iter()
+            // Active when both samples have a value and the residency advanced.
+            .filter(|&s| matches!((prev.counter(s), self.counter(s)), (Some(p), Some(c)) if c > p))
+            .collect()
+    }
+}
+
+/// One throttling episode for a single source on a single GPU. An episode opens when the source
+/// starts advancing and closes when it stops; `ended` is `None` while still active. Session-only —
+/// deliberately not `Serialize` so it stays out of the `--once --json` snapshot contract.
+#[derive(Debug, Clone)]
+pub struct ThermalEvent {
+    /// DRM card index this episode belongs to.
+    pub gpu_index: usize,
+    /// What was being throttled.
+    pub source: ThrottleSource,
+    /// When the episode was first observed.
+    pub started: Instant,
+    /// When it stopped, or `None` while still ongoing.
+    pub ended: Option<Instant>,
+}
+
+impl ThermalEvent {
+    /// How long ago the episode began, relative to `now`.
+    pub fn age(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.started)
+    }
+
+    /// How long the episode lasted, or `None` if it is still ongoing.
+    pub fn duration(&self) -> Option<Duration> {
+        self.ended
+            .map(|e| e.saturating_duration_since(self.started))
     }
 }
 
@@ -251,6 +346,27 @@ pub fn fmt_bytes(bytes: Opt<u64>) -> String {
     }
 }
 
+/// Format a duration as a compact human string for the events log: "<1s", "6s", "1m30s", "2h05m".
+/// Sub-second durations collapse to "<1s" so a one-tick blip still reads sensibly.
+pub fn fmt_duration(d: Duration) -> String {
+    let secs = d.as_secs();
+    if secs == 0 {
+        "<1s".to_string()
+    } else if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        let (m, s) = (secs / 60, secs % 60);
+        if s == 0 {
+            format!("{m}m")
+        } else {
+            format!("{m}m{s:02}s")
+        }
+    } else {
+        let (h, m) = (secs / 3600, (secs % 3600) / 60);
+        format!("{h}h{m:02}m")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,11 +409,64 @@ mod tests {
             thm_core: Some(5), // missing in prev → skipped (no baseline)
             ..Default::default()
         };
-        assert_eq!(cur.active_since(&prev), vec!["SPL", "SPPT"]);
+        assert_eq!(
+            cur.active_sources_since(&prev),
+            vec![ThrottleSource::Spl, ThrottleSource::Sppt]
+        );
+        // And their plain-English codes feed `throttle_active`.
+        let codes: Vec<_> = cur
+            .active_sources_since(&prev)
+            .iter()
+            .map(|s| s.code())
+            .collect();
+        assert_eq!(codes, vec!["SPL", "SPPT"]);
         // No prior data of any kind → nothing reported.
         assert!(Throttle::default()
-            .active_since(&Throttle::default())
+            .active_sources_since(&Throttle::default())
             .is_empty());
+    }
+
+    #[test]
+    fn every_source_has_distinct_label_and_code() {
+        use std::collections::HashSet;
+        let labels: HashSet<_> = ThrottleSource::ALL.iter().map(|s| s.label()).collect();
+        let codes: HashSet<_> = ThrottleSource::ALL.iter().map(|s| s.code()).collect();
+        assert_eq!(labels.len(), 7, "labels must be unique and non-cryptic");
+        assert_eq!(codes.len(), 7, "codes must be unique");
+        // Spot-check the everyday-English intent.
+        assert_eq!(ThrottleSource::ThmGfx.label(), "GPU too hot");
+        assert_eq!(ThrottleSource::ThmGfx.code(), "THM_GFX");
+    }
+
+    #[test]
+    fn fmt_duration_human_units() {
+        assert_eq!(fmt_duration(Duration::from_millis(400)), "<1s");
+        assert_eq!(fmt_duration(Duration::from_secs(6)), "6s");
+        assert_eq!(fmt_duration(Duration::from_secs(59)), "59s");
+        assert_eq!(fmt_duration(Duration::from_secs(60)), "1m");
+        assert_eq!(fmt_duration(Duration::from_secs(90)), "1m30s");
+        assert_eq!(fmt_duration(Duration::from_secs(3600)), "1h00m");
+        assert_eq!(fmt_duration(Duration::from_secs(3600 + 5 * 60)), "1h05m");
+    }
+
+    #[test]
+    fn thermal_event_age_and_duration() {
+        let start = Instant::now();
+        let ongoing = ThermalEvent {
+            gpu_index: 0,
+            source: ThrottleSource::ThmGfx,
+            started: start,
+            ended: None,
+        };
+        assert_eq!(ongoing.duration(), None, "ongoing episode has no duration");
+        let later = start + Duration::from_secs(6);
+        assert_eq!(ongoing.age(later), Duration::from_secs(6));
+
+        let closed = ThermalEvent {
+            ended: Some(start + Duration::from_secs(4)),
+            ..ongoing.clone()
+        };
+        assert_eq!(closed.duration(), Some(Duration::from_secs(4)));
     }
 
     #[test]

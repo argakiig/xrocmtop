@@ -41,6 +41,27 @@ pub fn flow_grid(area: Rect, n: usize) -> Vec<Rect> {
     cells
 }
 
+/// Minimum rows (including borders) worth giving each of the metrics and events regions.
+const EVENTS_MIN_H: u16 = 4;
+/// Cap on the events section so the per-GPU metrics keep the bulk of a tall cell.
+const EVENTS_MAX_H: u16 = 12;
+
+/// Split a Metrics-panel cell into `(metrics_area, events_area)`. The thermal-events log takes the
+/// bottom third (clamped to `[EVENTS_MIN_H, EVENTS_MAX_H]`) and the per-GPU metrics keep the rest.
+/// When the cell is too short to spare a usable events strip without starving the metrics,
+/// `events_area` is `None` and the whole cell renders metrics.
+pub fn metrics_split(area: Rect) -> (Rect, Option<Rect>) {
+    let events_h = (area.height / 3).clamp(EVENTS_MIN_H, EVENTS_MAX_H);
+    if area.height < events_h + EVENTS_MIN_H {
+        return (area, None);
+    }
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(EVENTS_MIN_H), Constraint::Length(events_h)])
+        .split(area);
+    (parts[0], Some(parts[1]))
+}
+
 /// Divide a panel cell into `n` equal horizontal rows, one per GPU. `n` is assumed ≥ 1.
 pub fn gpu_rows(area: Rect, n: usize) -> Vec<Rect> {
     let n = n.max(1);
@@ -82,6 +103,24 @@ mod tests {
         let rows = gpu_rows(area(), 1);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].height, 24);
+    }
+
+    #[test]
+    fn metrics_split_reserves_bottom_strip_for_events() {
+        let (metrics, events) = metrics_split(Rect::new(0, 0, 80, 30));
+        let events = events.expect("tall cell has an events strip");
+        // No height lost and events sit below metrics.
+        assert_eq!(metrics.height + events.height, 30);
+        assert_eq!(events.y, metrics.y + metrics.height);
+        assert!(events.height >= EVENTS_MIN_H && events.height <= EVENTS_MAX_H);
+    }
+
+    #[test]
+    fn metrics_split_skips_events_when_too_short() {
+        // Below 2*EVENTS_MIN_H there's no room to spare; the whole cell stays metrics.
+        let (metrics, events) = metrics_split(Rect::new(0, 0, 80, 6));
+        assert!(events.is_none());
+        assert_eq!(metrics.height, 6);
     }
 
     #[test]
