@@ -6,20 +6,7 @@ A [`btop`](https://github.com/aristocratos/btop)-style terminal UI for monitorin
 Vulkan GPUs, run entirely from the CLI. Live gauges, scrolling history graphs, a per-process GPU
 table, and a Vulkan device panel — for AMD GPUs and APUs, including unified-memory parts.
 
-```
-┌ GPU 0 — Radeon 8060S Graphics ──────────────────────────────┐┌ History ──────────────┐
-│                          Util 0%                            ││Util 0%                │
-│███████████████████████VRAM 46.89 GiB / 96.00 GiB (48%)      ││Power 27 W  ▁▂▃▅▇     │
-│██████████             GTT 1.97 GiB / 15.24 GiB (12%)        ││Temp 42°C   ▁▁▂▂▃     │
-│Temp 42°C  Power 27.1 W  sclk 2900MHz mclk 937MHz fclk 2000… ││                       │
-└─────────────────────────────────────────────────────────────┘└───────────────────────┘
-┌ GPU Processes (4, +478 hidden) ─────────────────────────────┐┌ Vulkan ───────────────┐
-│PID     Process            VRAM       GTT      GFX  COM      ││ Device  Radeon 8060S… │
-│693842  llama-server       27.92 GiB  385 MiB  3%   88%      ││ Driver  radv (Mesa 26…│
-│1248555 sd-server          6.32 GiB   130 MiB  41%  n/a      ││ API     1.4.335       │
-└─────────────────────────────────────────────────────────────┘└───────────────────────┘
-                                              ↑↓ select · Enter detail · s sort:mem · read-only
-```
+![xrocmtop monitoring a Radeon 8060S APU — gauges, history graphs, per-process GPU table, and the Vulkan panel](assets/default.png)
 
 ## Why
 
@@ -46,11 +33,14 @@ So `xrocmtop` is deliberately:
 Requires a Rust toolchain (stable). Builds to a single self-contained binary.
 
 ```sh
-git clone <repo> xrocmtop && cd xrocmtop
+# Install straight from the repo onto your PATH:
+cargo install --git https://github.com/argakiig/xrocmtop
+
+# Or build from a local clone:
+git clone https://github.com/argakiig/xrocmtop && cd xrocmtop
 cargo build --release
-./target/release/xrocmtop
-# or install onto your PATH:
-cargo install --path .
+./target/release/xrocmtop      # run in place
+cargo install --path .         # ...or install onto your PATH
 ```
 
 Prebuilt Linux binaries (glibc and static musl) are attached to each
@@ -149,6 +139,11 @@ xrocmtop --once --json --no-procs --no-vulkan | jq '.gpus[0].mem'
 
 Any metric a given card doesn't support (fan, power cap, `mem_busy_percent`, …) renders as **n/a**
 rather than failing.
+
+Press `Enter` on a process for the detail popup — full command line, every memory pool, and all
+four engines:
+
+![Process detail popup showing a llama-server's full command line, memory split, and per-engine utilization](assets/detail.png)
 
 ## Design & safety
 
