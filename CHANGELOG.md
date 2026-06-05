@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-04
+
+### Added
+- **SMU metrics panel** — a new toggleable panel (`3`) decoding the binary
+  `gpu_metrics` sysfs node (`gpu_metrics_v3_0`, SMU13 APUs such as Strix Halo).
+  Deliberately scoped to what the GPU-centric Gauges panel can't show — the rest of
+  the APU sharing the socket: **CPU** power, peak core clock, and a busy-core count
+  from per-core C0 residency; the **NPU** (XDNA/IPU) activity and power; **unified-
+  memory bandwidth** (DRAM read/write); GFX/SoC **hotspot temperatures** (distinct
+  from the edge sensor in Gauges); the **STAPM** sustained-power limit; and **live
+  throttle reasons** (PROCHOT / SPL / FPPT / SPPT / thermal), derived by diffing each
+  tick's throttle-residency counters. The decoded metrics are also included in the
+  `--once --json` output. Unsupported revisions and absent fields render as `n/a`.
+  The `?` help overlay gains a legend for the throttle and power-limit abbreviations
+  (PROCHOT / SPL / STAPM / FPPT / SPPT / THM_*).
+
+### Changed
+- Number keys now toggle five panels — `1`–`5` map to Gauges / Graphs / Metrics /
+  Processes / Vulkan (Processes and Vulkan shifted from `3`/`4` to `4`/`5`).
+
 ## [0.1.0] - 2026-06-04
 
 Initial release: a btop-style terminal UI for monitoring AMD ROCm / Vulkan GPUs.
@@ -34,5 +54,6 @@ Initial release: a btop-style terminal UI for monitoring AMD ROCm / Vulkan GPUs.
 - **Distribution** — release workflow builds glibc-dynamic and musl-static Linux
   binaries with `.sha256` checksums attached to each GitHub Release.
 
-[Unreleased]: https://github.com/argakiig/xrocmtop/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/argakiig/xrocmtop/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/argakiig/xrocmtop/releases/tag/v0.2.0
 [0.1.0]: https://github.com/argakiig/xrocmtop/releases/tag/v0.1.0

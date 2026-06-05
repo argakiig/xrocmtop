@@ -10,7 +10,8 @@ is built, and how we know it is done. It describes the **current, shipped** prod
 
 **What:** A single-binary, keyboard-driven terminal dashboard showing live AMD GPU state —
 utilization, memory, temperature, power, and clocks — as gauges and scrolling history graphs,
-alongside a per-process GPU table and a Vulkan device panel.
+alongside a per-process GPU table, a Vulkan device panel, and an SMU metrics panel (CPU / NPU /
+unified-memory bandwidth, hotspot temperatures, and live throttle reasons).
 
 **Who:** Developers and operators on AMD ROCm/Vulkan machines (workstations, APU laptops/mini-PCs,
 compute boxes) who want an always-on monitor richer and friendlier than `watch rocm-smi`, and
@@ -39,11 +40,15 @@ when a metric isn't supported, and negligible idle CPU overhead.
 **Data sources**, in priority order:
 1. **amdgpu sysfs** — `/sys/class/drm/cardN/device/...` + its `hwmon` node. Primary,
    high-frequency, cheap (plain file reads, no fork).
-2. **`rocm-smi --json`** — static identity (device name, VBIOS, IDs) and any metric not in sysfs.
+2. **`gpu_metrics`** — the binary SMU telemetry node under the same `device/` dir. A versioned C
+   struct (header-dispatched; v3_0 decoded for SMU13 APUs) carrying the APU-side signals hwmon does
+   not expose: CPU power/clock/per-core residency, the NPU (XDNA/IPU), unified-memory bandwidth,
+   hotspot temperatures, the STAPM limit, and throttle-residency counters. Read every tick.
+3. **`rocm-smi --json`** — static identity (device name, VBIOS, IDs) and any metric not in sysfs.
    Polled at low frequency since forking is expensive. Used only if present.
-3. **`vulkaninfo --json`** — Vulkan device panel (driver/API version, memory heaps). One-shot at
+4. **`vulkaninfo --json`** — Vulkan device panel (driver/API version, memory heaps). One-shot at
    startup. Used only if present.
-4. **`/proc/<pid>/fdinfo`** — per-process amdgpu DRM accounting (memory pools + engine counters).
+5. **`/proc/<pid>/fdinfo`** — per-process amdgpu DRM accounting (memory pools + engine counters).
 
 `ash`/live Vulkan bindings remain deliberately out of scope; v1 parses `vulkaninfo --json` to
 avoid a heavy build/runtime dependency.
@@ -96,6 +101,7 @@ src/
   collect/
     mod.rs               → Collector module wiring
     sysfs.rs             → amdgpu sysfs + hwmon reader (primary, high-frequency)
+    gpu_metrics.rs       → Binary gpu_metrics node decoder (SMU telemetry; versioned C struct)
     smi.rs               → rocm-smi --json wrapper + parser (low-frequency/static identity)
     vulkan.rs            → vulkaninfo --json wrapper + parser (one-shot)
     process.rs           → /proc/<pid>/fdinfo amdgpu DRM accounting (per-process usage)
@@ -104,6 +110,7 @@ src/
     layout.rs            → Responsive layout (adapts to terminal size)
     gauges.rs            → Util / mem / temp / power gauges + bars
     graphs.rs            → Sparkline history graphs
+    metrics.rs           → SMU metrics panel (power split, hotspot temps, clocks, throttle reasons)
     processes.rs         → Per-process GPU table (width-aware columns, row selection)
     proc_detail.rs       → Per-process detail popup (full cmdline, all pools + engines, clients)
     vulkan.rs            → Vulkan device panel
@@ -160,6 +167,19 @@ temperature. Each metric is a text column beside a pure-fill bar so labels never
 Multi-GPU systems stack all cards inside the single Gauges/Graphs panel cell, keeping the panel
 model independent of GPU count.
 
+### SMU metrics panel
+Per GPU, telemetry decoded from the binary `gpu_metrics` node. Deliberately scoped to what the
+GPU-centric Gauges/Graphs panels *structurally cannot* show — the rest of the APU sharing the
+socket — rather than re-printing GPU util/clocks/total-power: **CPU** power, peak core clock, and a
+busy-core count derived from per-core C0 residency; the **NPU** (XDNA/IPU) activity and power;
+**unified-memory bandwidth** (DRAM read/write); GFX/SoC **hotspot temperatures** (the
+throttle-relevant sensors hwmon omits, distinct from the edge temp in Gauges); the **STAPM**
+sustained-power limit; and **which limits are actively throttling** — derived in-`App` by diffing
+each tick's throttle-residency counters (PROCHOT / SPL / FPPT / SPPT / per-domain thermal), so a
+source reads as active only while its counter advances. The decoder is header-dispatched on the
+struct's revision (v3_0 today) and validates layout against a committed binary fixture; unsupported
+revisions and absent fields render `n/a`. Decoded values also appear in the `--once --json` output.
+
 ### Per-process table & detail
 One row per process holding an amdgpu DRM handle, de-duplicated per `(pid, drm-client-id)`.
 Columns are width-aware (`PID · Process · VRAM · GTT · GFX · COM`, dropping GTT → compute →
@@ -176,7 +196,7 @@ Device name, driver, API version, and device-local memory heaps from `vulkaninfo
 ### Customization & persistence
 Built-in themes (`default`, `high-contrast`, `mono`) cycled at runtime, plus a
 `$XDG_CONFIG_HOME/xrocmtop/config.toml` (falling back to `~/.config/xrocmtop/`) that can override
-any element color (named like `green` or hex like `#ff8800`). The four panels can be toggled and
+any element color (named like `green` or hex like `#ff8800`). The five panels can be toggled and
 reordered at runtime; `Tab` cycles focus, move keys reposition the focused panel in the flow grid,
 number keys toggle visibility, and the focused panel is highlighted. Theme choice, color
 overrides, and panel order/visibility auto-save on exit and reload at startup; `--no-procs` /
@@ -244,13 +264,16 @@ terminal is restored via a panic hook + RAII guard so a crash never leaves a bro
    **GFX/compute** utilization, sortable and selectable; `Enter` opens a **detail popup** with the
    full command line, all memory pools, all four engines, and a per-client breakdown.
 4. The **Vulkan panel** shows device name, driver, API version, and memory heaps.
-5. **Graceful degradation:** unsupported metrics render as `n/a` and never panic (covered by a
+5. The **SMU metrics panel** decodes the `gpu_metrics` node where present: CPU power/clock/busy
+   cores, the NPU, unified-memory bandwidth, hotspot temperatures, the STAPM limit, and live
+   throttle reasons (covered by a committed binary fixture).
+6. **Graceful degradation:** unsupported metrics render as `n/a` and never panic (covered by a
    degraded-input fixture test).
-6. **Customization persists:** theme, color overrides, and panel layout survive a restart via the
+7. **Customization persists:** theme, color overrides, and panel layout survive a restart via the
    XDG config file.
-7. `xrocmtop --once --json` prints a parseable snapshot and exits 0 (contract test).
-8. `q` / `Ctrl-C` exit cleanly and fully restore the terminal; a panic also restores it.
-9. Idle CPU overhead is low (well under one core's worth at 1 Hz).
+8. `xrocmtop --once --json` prints a parseable snapshot and exits 0 (contract test).
+9. `q` / `Ctrl-C` exit cleanly and fully restore the terminal; a panic also restores it.
+10. Idle CPU overhead is low (well under one core's worth at 1 Hz).
 
 ---
 

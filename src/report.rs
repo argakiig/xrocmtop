@@ -167,6 +167,7 @@ mod tests {
                     fclk_mhz: Some(2000),
                     socclk_mhz: Some(1472),
                 },
+                metrics: None,
             }],
             processes: Some(ProcessReport {
                 hidden: 3,

@@ -33,6 +33,10 @@ pub struct GpuSnapshot {
     pub power_w: Opt<f64>,
     /// Engine/memory clock frequencies in MHz.
     pub clocks: Clocks,
+    /// Rich SMU telemetry decoded from the binary `gpu_metrics` node — APU temp/power split and
+    /// per-source throttle accounting. `None` when the node is absent or its revision is unsupported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<Metrics>,
 }
 
 /// Memory pools. Unified-memory APUs are first-class: VRAM and GTT are tracked separately.
@@ -71,6 +75,88 @@ pub struct Clocks {
     pub fclk_mhz: Opt<u32>,
     /// SoC clock.
     pub socclk_mhz: Opt<u32>,
+}
+
+/// SMU telemetry decoded from the binary `gpu_metrics` sysfs node.
+///
+/// Deliberately scoped to the signals the GPU-centric Gauges/Graphs panels *cannot* show — the
+/// rest of the APU sharing one socket: the CPU cores, the NPU (XDNA/IPU), unified-memory
+/// bandwidth, the GFX/SoC hotspot temperatures hwmon omits, the sustained-power limit, and
+/// per-source throttle accounting. GPU util/clocks/total-power are intentionally left to Gauges.
+/// Populated from `gpu_metrics_v3_0` (SMU13 APUs such as Strix Halo); every field is [`Opt`] so an
+/// unsupported metric or a different format revision renders as "n/a".
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Metrics {
+    /// GFX (shader) hotspot temperature in degrees Celsius — the throttle-relevant temperature,
+    /// distinct from the edge sensor shown in the Gauges panel.
+    pub temp_gfx_c: Opt<f64>,
+    /// SoC temperature in degrees Celsius.
+    pub temp_soc_c: Opt<f64>,
+    /// Summed CPU-core power across the socket in watts — the CPU half of the shared APU budget.
+    pub cpu_power_w: Opt<f64>,
+    /// Highest currently-running CPU-core clock across the socket, in MHz.
+    pub cpu_clk_max_mhz: Opt<u16>,
+    /// Per-CPU-core C0 (active) residency, 0..=100. Empty when unsupported. The panel summarizes
+    /// this as a "busy cores" count.
+    pub cpu_core_c0: Vec<u8>,
+    /// NPU (XDNA/IPU) activity, 0..=100 — peak across the NPU's columns.
+    pub npu_activity_pct: Opt<u16>,
+    /// NPU (XDNA/IPU) power in watts.
+    pub npu_power_w: Opt<f64>,
+    /// Unified-memory read bandwidth in MB/s.
+    pub dram_read_mbps: Opt<u16>,
+    /// Unified-memory write bandwidth in MB/s.
+    pub dram_write_mbps: Opt<u16>,
+    /// Sustained (STAPM) power limit in watts; the `0xFFFF` "unset" sentinel renders as n/a.
+    pub stapm_limit_w: Opt<f64>,
+    /// Cumulative per-source throttle residency counters (monotonic; diffed for "active").
+    pub throttle: Throttle,
+    /// Throttle sources whose residency advanced over the last interval. Filled by the app from
+    /// consecutive samples; empty before a second sample exists, or when nothing throttled.
+    pub throttle_active: Vec<String>,
+}
+
+/// Cumulative throttle-residency counters from `gpu_metrics`. Each is a free-running accumulator;
+/// a source is "currently throttling" when its counter advances between two samples (see
+/// [`Throttle::active_since`]). A `None` means the source was absent from the sample.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Throttle {
+    /// External PROCHOT assertion.
+    pub prochot: Opt<u32>,
+    /// Socket power limit (SPL).
+    pub spl: Opt<u32>,
+    /// Fast PPT limit.
+    pub fppt: Opt<u32>,
+    /// Slow/sustained PPT limit.
+    pub sppt: Opt<u32>,
+    /// CPU-core thermal limit.
+    pub thm_core: Opt<u32>,
+    /// GFX thermal limit.
+    pub thm_gfx: Opt<u32>,
+    /// SoC thermal limit.
+    pub thm_soc: Opt<u32>,
+}
+
+impl Throttle {
+    /// The throttle sources whose residency increased from `prev` to `self` — i.e. those active
+    /// during the interval between the two samples. A source missing from either sample is skipped.
+    pub fn active_since(&self, prev: &Throttle) -> Vec<&'static str> {
+        let mut active = Vec::new();
+        // A source is active when both samples have a value and the residency advanced.
+        let mut check = |name, old: Opt<u32>, cur: Opt<u32>| {
+            if matches!((old, cur), (Some(p), Some(c)) if c > p) {
+                active.push(name);
+            }
+        };
+        check("PROCHOT", prev.prochot, self.prochot);
+        check("SPL", prev.spl, self.spl);
+        check("FPPT", prev.fppt, self.fppt);
+        check("SPPT", prev.sppt, self.sppt);
+        check("THM_CORE", prev.thm_core, self.thm_core);
+        check("THM_GFX", prev.thm_gfx, self.thm_gfx);
+        check("THM_SOC", prev.thm_soc, self.thm_soc);
+        active
+    }
 }
 
 /// Cumulative GPU-engine busy time for a process, in nanoseconds, summed across its DRM clients.
@@ -186,6 +272,32 @@ mod tests {
         assert_eq!(frac(None, Some(10)), None);
         assert_eq!(frac(Some(10), Some(0)), None); // no divide-by-zero
         assert_eq!(frac(None, None), None);
+    }
+
+    #[test]
+    fn throttle_active_since_reports_advanced_sources() {
+        let prev = Throttle {
+            prochot: Some(0),
+            spl: Some(100),
+            fppt: Some(50),
+            sppt: Some(7),
+            thm_gfx: Some(9),
+            ..Default::default()
+        };
+        let cur = Throttle {
+            prochot: Some(0),  // unchanged → not active
+            spl: Some(150),    // advanced → active
+            fppt: Some(50),    // unchanged → not active
+            sppt: Some(9),     // advanced → active
+            thm_gfx: None,     // missing in current sample → skipped
+            thm_core: Some(5), // missing in prev → skipped (no baseline)
+            ..Default::default()
+        };
+        assert_eq!(cur.active_since(&prev), vec!["SPL", "SPPT"]);
+        // No prior data of any kind → nothing reported.
+        assert!(Throttle::default()
+            .active_since(&Throttle::default())
+            .is_empty());
     }
 
     #[test]

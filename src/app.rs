@@ -25,7 +25,7 @@ use crate::collect::sysfs::{self, SysfsGpu};
 use crate::collect::{process, vulkan};
 use crate::config::Config;
 use crate::history::GpuHistory;
-use crate::model::{EngineNs, GpuSnapshot, Opt, ProcInfo, VulkanInfo};
+use crate::model::{EngineNs, GpuSnapshot, Opt, ProcInfo, Throttle, VulkanInfo};
 use crate::panel::{PanelKind, PanelLayout};
 use crate::settings::Settings;
 use crate::theme::Theme;
@@ -84,6 +84,9 @@ pub struct App {
     procs_hidden: usize,
     /// Derives per-process engine utilization from the delta between two process walks.
     engine_sampler: EngineSampler,
+    /// Previous throttle-residency counters per card index, for deriving which sources are
+    /// actively throttling (a counter that advanced between two ticks).
+    prev_throttle: BTreeMap<usize, Throttle>,
     /// Wall-clock instant of the previous process walk, for the engine-utilization denominator.
     last_proc_walk: Option<Instant>,
     /// Index of the highlighted process row (clamped to the current list).
@@ -143,6 +146,7 @@ impl App {
             procs: Vec::new(),
             procs_hidden: 0,
             engine_sampler: EngineSampler::new(),
+            prev_throttle: BTreeMap::new(),
             last_proc_walk: None,
             proc_selected: 0,
             proc_detail_open: false,
@@ -193,6 +197,7 @@ impl App {
             procs: Vec::new(),
             procs_hidden: 0,
             engine_sampler: EngineSampler::new(),
+            prev_throttle: BTreeMap::new(),
             last_proc_walk: None,
             proc_selected: 0,
             proc_detail_open: false,
@@ -243,6 +248,8 @@ impl App {
             })
             .collect();
 
+        self.derive_throttle();
+
         for (hist, snap) in self.history.iter_mut().zip(self.snapshots.iter()) {
             // Missing metrics carry the last known value (0.0 before any sample) so the three
             // series stay continuous and time-aligned.
@@ -280,6 +287,26 @@ impl App {
         self.clamp_selection();
 
         self.ticks = self.ticks.wrapping_add(1);
+    }
+
+    /// Fill each snapshot's `throttle_active` set by diffing its throttle-residency counters against
+    /// the previous tick's, then record the current counters for next time. The first sample for a
+    /// card has no baseline, so it reports nothing until the following tick.
+    fn derive_throttle(&mut self) {
+        for snap in self.snapshots.iter_mut() {
+            let Some(m) = snap.metrics.as_mut() else {
+                continue;
+            };
+            if let Some(prev) = self.prev_throttle.get(&snap.index) {
+                m.throttle_active = m
+                    .throttle
+                    .active_since(prev)
+                    .into_iter()
+                    .map(String::from)
+                    .collect();
+            }
+            self.prev_throttle.insert(snap.index, m.throttle.clone());
+        }
     }
 
     /// Re-order the process list per the current [`ProcSort`]. The collector pre-sorts by memory;
@@ -428,11 +455,12 @@ impl App {
             // Reorder the focused panel earlier/later in the flow.
             (KeyCode::Char('['), _) | (KeyCode::Left, _) => self.panels.move_focused(-1),
             (KeyCode::Char(']'), _) | (KeyCode::Right, _) => self.panels.move_focused(1),
-            // Toggle a specific panel by number.
+            // Toggle a specific panel by number (matches the canonical panel order).
             (KeyCode::Char('1'), _) => self.panels.toggle(PanelKind::Gauges),
             (KeyCode::Char('2'), _) => self.panels.toggle(PanelKind::Graphs),
-            (KeyCode::Char('3'), _) => self.panels.toggle(PanelKind::Processes),
-            (KeyCode::Char('4'), _) => self.panels.toggle(PanelKind::Vulkan),
+            (KeyCode::Char('3'), _) => self.panels.toggle(PanelKind::Metrics),
+            (KeyCode::Char('4'), _) => self.panels.toggle(PanelKind::Processes),
+            (KeyCode::Char('5'), _) => self.panels.toggle(PanelKind::Vulkan),
             _ => {}
         }
     }
@@ -797,6 +825,57 @@ mod tests {
     }
 
     #[test]
+    fn derive_throttle_flags_advanced_sources_after_first_sample() {
+        use crate::model::{Metrics, Throttle};
+        let mut a = fixture_app("throttle");
+        let snap = |spl: u32| GpuSnapshot {
+            index: 0,
+            metrics: Some(Metrics {
+                throttle: Throttle {
+                    spl: Some(spl),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let active = |a: &App| {
+            a.snapshots[0]
+                .metrics
+                .as_ref()
+                .unwrap()
+                .throttle_active
+                .clone()
+        };
+
+        // First sample: no baseline yet → nothing reported active.
+        a.snapshots = vec![snap(100)];
+        a.derive_throttle();
+        assert!(active(&a).is_empty());
+
+        // SPL residency advanced since the baseline → SPL is actively throttling.
+        a.snapshots = vec![snap(150)];
+        a.derive_throttle();
+        assert_eq!(active(&a), vec!["SPL".to_string()]);
+
+        // Unchanged residency → nothing active again.
+        a.snapshots = vec![snap(150)];
+        a.derive_throttle();
+        assert!(active(&a).is_empty());
+    }
+
+    #[test]
+    fn tick_populates_metrics_from_fixture() {
+        // The committed sysfs fixture includes a gpu_metrics node, so a ticked snapshot carries
+        // decoded SMU telemetry; the first tick has no throttle baseline so nothing is "active".
+        let mut a = fixture_app("metrics");
+        a.tick();
+        let m = a.snapshots()[0].metrics.as_ref().expect("metrics decoded");
+        assert_eq!(m.temp_gfx_c, Some(70.38));
+        assert!(m.throttle_active.is_empty());
+    }
+
+    #[test]
     fn s_cycles_sort_and_reorders() {
         use crate::model::ProcInfo;
         let mut a = app();
@@ -842,7 +921,7 @@ mod tests {
     fn save_settings_round_trips_layout() {
         let mut a = fixture_app("save");
         // Mutate the layout: hide Processes and move the focused panel later.
-        a.on_key(key(KeyCode::Char('3'), KeyModifiers::NONE)); // hide Processes
+        a.on_key(key(KeyCode::Char('4'), KeyModifiers::NONE)); // hide Processes
         a.on_key(key(KeyCode::Char(']'), KeyModifiers::NONE)); // move focused panel later
 
         let expected = a.panels.to_settings();
@@ -893,12 +972,22 @@ mod tests {
     }
 
     #[test]
-    fn three_toggles_processes_panel_hidden() {
-        let mut a = fixture_app("toggle3");
+    fn four_toggles_processes_panel_hidden() {
+        let mut a = fixture_app("toggle4");
         assert!(a.panels().visible().contains(&PanelKind::Processes));
-        a.on_key(key(KeyCode::Char('3'), KeyModifiers::NONE));
+        a.on_key(key(KeyCode::Char('4'), KeyModifiers::NONE));
         assert!(!a.panels().visible().contains(&PanelKind::Processes));
-        a.on_key(key(KeyCode::Char('3'), KeyModifiers::NONE));
+        a.on_key(key(KeyCode::Char('4'), KeyModifiers::NONE));
         assert!(a.panels().visible().contains(&PanelKind::Processes));
+    }
+
+    #[test]
+    fn three_toggles_metrics_panel_hidden() {
+        let mut a = fixture_app("toggle3");
+        assert!(a.panels().visible().contains(&PanelKind::Metrics));
+        a.on_key(key(KeyCode::Char('3'), KeyModifiers::NONE));
+        assert!(!a.panels().visible().contains(&PanelKind::Metrics));
+        a.on_key(key(KeyCode::Char('3'), KeyModifiers::NONE));
+        assert!(a.panels().visible().contains(&PanelKind::Metrics));
     }
 }

@@ -6,6 +6,7 @@
 mod gauges;
 mod graphs;
 mod layout;
+mod metrics;
 mod proc_detail;
 mod processes;
 mod vulkan;
@@ -56,14 +57,23 @@ fn render_help(frame: &mut Frame, area: Rect, theme: &crate::theme::Theme) {
         ("[ ]  ← →", "move focused panel"),
         ("↑ ↓ / j k", "select process row (Processes focused)"),
         ("Enter", "process detail (Esc / any key closes)"),
-        ("1 2 3 4", "toggle Gauges / Graphs / Processes / Vulkan"),
+        ("1 2 3 4 5", "toggle Gauges/Graphs/Metrics/Processes/Vulkan"),
         ("t", "cycle theme"),
         ("s", "cycle process sort"),
         ("p", "pause / resume"),
         ("? ", "toggle this help"),
         ("q / Esc", "quit"),
+        // Legend for the Metrics panel's throttle line and STAPM limit, whose SMU abbreviations
+        // are otherwise opaque. Blank "key" rows render as spacers/headers.
+        ("", ""),
+        ("Metrics", "throttle & power-limit legend:"),
+        ("PROCHOT", "external hot signal asserted"),
+        ("SPL/STAPM", "sustained power limit"),
+        ("FPPT", "fast package power limit"),
+        ("SPPT", "slow package power limit"),
+        ("THM_*", "thermal limit: core / gfx / soc"),
     ];
-    let width = 52u16.min(area.width.saturating_sub(2));
+    let width = 60u16.min(area.width.saturating_sub(2));
     let height = (lines.len() as u16 + 4).min(area.height.saturating_sub(2));
     let popup = centered_rect(width, height, area);
 
@@ -80,7 +90,7 @@ fn render_help(frame: &mut Frame, area: Rect, theme: &crate::theme::Theme) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.focus))
-        .title(" Keys — read-only, no GPU control ")
+        .title(" Keys & metrics legend — read-only ")
         .title_style(Style::default().fg(theme.title));
     frame.render_widget(Clear, popup);
     frame.render_widget(Paragraph::new(body).block(block), popup);
@@ -109,6 +119,12 @@ fn render_panel(frame: &mut Frame, kind: PanelKind, area: Rect, app: &App) {
             let hist = app.history();
             for (h, row) in hist.iter().zip(layout::gpu_rows(area, hist.len().max(1))) {
                 graphs::render_graphs(frame, row, h, theme, focused);
+            }
+        }
+        PanelKind::Metrics => {
+            let snaps = app.snapshots();
+            for (snap, row) in snaps.iter().zip(layout::gpu_rows(area, snaps.len())) {
+                metrics::render_metrics(frame, row, snap, theme, focused);
             }
         }
         PanelKind::Processes => processes::render_processes(
@@ -174,4 +190,33 @@ fn render_empty(frame: &mut Frame, area: Rect, theme: &crate::theme::Theme) {
                 .title_style(Style::default().fg(theme.title)),
         );
     frame.render_widget(msg, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::Theme;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn render_help_text() -> String {
+        let mut term = Terminal::new(TestBackend::new(70, 24)).unwrap();
+        term.draw(|f| render_help(f, f.area(), &Theme::default()))
+            .unwrap();
+        let buf = term.backend().buffer().clone();
+        buf.content().iter().map(|c| c.symbol()).collect()
+    }
+
+    #[test]
+    fn help_overlay_includes_metrics_throttle_legend() {
+        let out = render_help_text();
+        // The keybindings are still present...
+        assert!(out.contains("focus next panel"));
+        // ...and the Metrics throttle/limit legend is now shown alongside them.
+        assert!(out.contains("PROCHOT"));
+        assert!(out.contains("FPPT"));
+        assert!(out.contains("SPPT"));
+        assert!(out.contains("sustained power limit")); // SPL/STAPM
+        assert!(out.contains("thermal limit")); // THM_*
+    }
 }

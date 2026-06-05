@@ -12,15 +12,17 @@ use std::collections::HashSet;
 pub enum PanelKind {
     Gauges,
     Graphs,
+    Metrics,
     Processes,
     Vulkan,
 }
 
 impl PanelKind {
     /// All panels in their canonical default order.
-    pub const ALL: [PanelKind; 4] = [
+    pub const ALL: [PanelKind; 5] = [
         PanelKind::Gauges,
         PanelKind::Graphs,
+        PanelKind::Metrics,
         PanelKind::Processes,
         PanelKind::Vulkan,
     ];
@@ -30,6 +32,7 @@ impl PanelKind {
         match self {
             PanelKind::Gauges => "gauges",
             PanelKind::Graphs => "graphs",
+            PanelKind::Metrics => "metrics",
             PanelKind::Processes => "processes",
             PanelKind::Vulkan => "vulkan",
         }
@@ -195,6 +198,7 @@ mod tests {
                 PanelKind::Vulkan,
                 PanelKind::Gauges,
                 PanelKind::Graphs,
+                PanelKind::Metrics,
                 PanelKind::Processes
             ]
         );
@@ -207,7 +211,7 @@ mod tests {
     fn default_order_when_empty() {
         let layout = PanelLayout::from_settings(&[], &[]);
         assert_eq!(layout.order, PanelKind::ALL.to_vec());
-        assert_eq!(layout.visible().len(), 4);
+        assert_eq!(layout.visible().len(), 5);
         assert_eq!(layout.focused_kind(), Some(PanelKind::Gauges));
     }
 
@@ -222,7 +226,8 @@ mod tests {
 
     #[test]
     fn focus_next_wraps_over_visible() {
-        let mut layout = PanelLayout::from_settings(&[], &["graphs".into(), "vulkan".into()]);
+        let mut layout =
+            PanelLayout::from_settings(&[], &["graphs".into(), "metrics".into(), "vulkan".into()]);
         // visible: [Gauges, Processes]
         assert_eq!(layout.focused_kind(), Some(PanelKind::Gauges));
         layout.focus_next();
@@ -246,23 +251,30 @@ mod tests {
 
     #[test]
     fn move_focused_skips_hidden_panel() {
-        // order=[Gauges, Graphs(hidden), Processes, Vulkan]; visible=[Gauges, Processes, Vulkan].
+        // order=[Gauges, Graphs(hidden), Metrics, Processes, Vulkan];
+        // visible=[Gauges, Metrics, Processes, Vulkan].
         let mut layout = PanelLayout::from_settings(&[], &["graphs".into()]);
         assert_eq!(layout.focused_kind(), Some(PanelKind::Gauges));
-        // Moving Gauges later swaps it with its visible neighbor (Processes), across the hidden gap.
+        // Moving Gauges later swaps it with its visible neighbor (Metrics), across the hidden gap.
         layout.move_focused(1);
         assert_eq!(
             layout.order,
             vec![
-                PanelKind::Processes,
+                PanelKind::Metrics,
                 PanelKind::Graphs,
                 PanelKind::Gauges,
+                PanelKind::Processes,
                 PanelKind::Vulkan
             ]
         );
         assert_eq!(
             layout.visible(),
-            vec![PanelKind::Processes, PanelKind::Gauges, PanelKind::Vulkan]
+            vec![
+                PanelKind::Metrics,
+                PanelKind::Gauges,
+                PanelKind::Processes,
+                PanelKind::Vulkan
+            ]
         );
         assert_eq!(layout.focused_kind(), Some(PanelKind::Gauges)); // focus follows the move
     }
@@ -294,6 +306,7 @@ mod tests {
         // Hide everything → no focused panel, and no panic.
         layout.hide(PanelKind::Gauges);
         layout.hide(PanelKind::Graphs);
+        layout.hide(PanelKind::Metrics);
         layout.hide(PanelKind::Processes);
         assert!(layout.visible().is_empty());
         assert_eq!(layout.focused_kind(), None);

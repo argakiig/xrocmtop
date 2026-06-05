@@ -15,6 +15,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::collect::gpu_metrics;
 use crate::model::{Clocks, GpuSnapshot, MemInfo, Opt};
 
 /// A discovered amdgpu DRM card, identified by its sysfs `device` directory.
@@ -37,6 +38,7 @@ impl SysfsGpu {
             temp_c: hwmon.as_deref().and_then(read_temp_c),
             power_w: hwmon.as_deref().and_then(read_power_w),
             clocks: read_clocks(dev),
+            metrics: gpu_metrics::read(dev),
             ..Default::default()
         }
     }
@@ -223,6 +225,12 @@ mod tests {
         assert_eq!(snap.clocks.mclk_mhz, Some(937));
         assert_eq!(snap.clocks.fclk_mhz, Some(2000));
         assert_eq!(snap.clocks.socclk_mhz, Some(1472));
+        // The binary gpu_metrics node is decoded and attached (see gpu_metrics.rs for the full
+        // field-level assertions); here we just confirm the wiring populates it.
+        let m = snap.metrics.expect("gpu_metrics decoded from fixture");
+        assert_eq!(m.temp_gfx_c, Some(70.38));
+        assert_eq!(m.cpu_power_w, Some(4.659));
+        assert_eq!(m.dram_read_mbps, Some(47791));
     }
 
     #[test]
@@ -237,6 +245,7 @@ mod tests {
         assert_eq!(snap.temp_c, None);
         assert_eq!(snap.power_w, None);
         assert_eq!(snap.clocks.sclk_mhz, None);
+        assert!(snap.metrics.is_none()); // no gpu_metrics node in the degraded fixture
     }
 
     #[test]

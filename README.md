@@ -4,7 +4,9 @@
 
 A [`btop`](https://github.com/aristocratos/btop)-style terminal UI for monitoring AMD ROCm /
 Vulkan GPUs, run entirely from the CLI. Live gauges, scrolling history graphs, a per-process GPU
-table, and a Vulkan device panel — for AMD GPUs and APUs, including unified-memory parts.
+table, a Vulkan device panel, and an SMU metrics panel covering the rest of the APU the GPU view
+can't — CPU cores, the NPU, unified-memory bandwidth, hotspot temperatures, and live throttle
+reasons — for AMD GPUs and APUs, including unified-memory parts.
 
 ![xrocmtop monitoring a Radeon 8060S APU — gauges, history graphs, per-process GPU table, and the Vulkan panel](assets/default.png)
 
@@ -75,12 +77,12 @@ xrocmtop [OPTIONS]
 | Key | Action |
 |-----|--------|
 | `q` / `Esc` / `Ctrl-C` | Quit (restores the terminal cleanly) |
-| `?` | Toggle the help overlay (lists all keys) |
+| `?` | Toggle the help overlay (all keys, plus a legend for the Metrics throttle/limit abbreviations) |
 | `Tab` | Focus the next panel |
 | `[` `]` / `←` `→` | Move the focused panel earlier / later in the layout |
 | `↑` `↓` / `j` `k` | Select a process row (when the Processes panel is focused) |
 | `Enter` | Open the detail popup for the selected process (`Esc` / any key closes) |
-| `1` `2` `3` `4` | Toggle the Gauges / Graphs / Processes / Vulkan panel |
+| `1` `2` `3` `4` `5` | Toggle the Gauges / Graphs / Metrics / Processes / Vulkan panel |
 | `t` | Cycle the color theme |
 | `p` | Pause / resume refreshing |
 | `s` | Cycle the process-table sort: memory → pid → name |
@@ -109,7 +111,7 @@ accent   = "yellow"      # paused/hidden/table-header
 # also: border, title, text, dim, footer, graph_util, graph_power, graph_temp
 
 # Panel order and which are hidden (managed by the toggle/move keys, but editable).
-order  = ["gauges", "graphs", "processes", "vulkan"]
+order  = ["gauges", "graphs", "metrics", "processes", "vulkan"]
 hidden = []
 ```
 
