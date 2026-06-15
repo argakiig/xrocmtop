@@ -213,11 +213,25 @@ fn metrics_lines(snap: &GpuSnapshot, theme: &Theme) -> Vec<Line<'static>> {
             ],
             theme,
         ),
+        // NPU gets its own labeled block: activity+power, then clock, then memory R/W bandwidth.
         labeled(
             "NPU",
             vec![
                 pair("", m.npu_activity_pct.map(fmt_pct), theme.text, theme),
                 pair("", m.npu_power_w.map(fmt_watt), theme.graph_power, theme),
+            ],
+            theme,
+        ),
+        labeled(
+            "",
+            vec![pair("", m.npu_clk_mhz.map(fmt_mhz), theme.text, theme)],
+            theme,
+        ),
+        labeled(
+            "",
+            vec![
+                pair("R", m.npu_read_mbps.map(fmt_bw), theme.vram_bar, theme),
+                pair("W", m.npu_write_mbps.map(fmt_bw), theme.gtt_bar, theme),
             ],
             theme,
         ),
@@ -341,8 +355,11 @@ mod tests {
             cpu_power_w: Some(22.77),
             cpu_clk_max_mhz: Some(5040),
             cpu_core_c0: vec![7, 21, 2, 1, 2, 3, 32, 5, 3, 3, 2, 2, 0, 1, 1, 5],
-            npu_activity_pct: Some(0),
-            npu_power_w: None,
+            npu_activity_pct: Some(12),
+            npu_power_w: Some(3.2),
+            npu_clk_mhz: Some(1400),
+            npu_read_mbps: Some(820),
+            npu_write_mbps: Some(410),
             dram_read_mbps: Some(47791),
             dram_write_mbps: Some(1463),
             stapm_limit_w: None,
@@ -360,7 +377,9 @@ mod tests {
     }
 
     fn render(snap: &GpuSnapshot) -> String {
-        let mut term = Terminal::new(TestBackend::new(90, 9)).unwrap();
+        // Tall enough for all metric lines including the expanded NPU block (activity/power,
+        // clock, R/W) plus the throttle line and both borders.
+        let mut term = Terminal::new(TestBackend::new(90, 12)).unwrap();
         term.draw(|f| render_metrics(f, f.area(), snap, &Theme::default(), false))
             .unwrap();
         let buf = term.backend().buffer().clone();
@@ -376,6 +395,10 @@ mod tests {
         assert!(out.contains("5040MHz")); // peak CPU clock
         assert!(out.contains("5/16 busy")); // CPU cores with C0 >= 5%
         assert!(out.contains("47.8 GB/s")); // DRAM read bandwidth
+        assert!(out.contains("12%")); // NPU activity
+        assert!(out.contains("3.2W")); // NPU power
+        assert!(out.contains("1400MHz")); // NPU clock
+        assert!(out.contains("0.8 GB/s")); // NPU read bandwidth (820 MB/s)
         assert!(out.contains("FPPT"));
         assert!(out.contains("SPPT"));
         // GPU-side duplicates are intentionally NOT here (those live in the Gauges panel).

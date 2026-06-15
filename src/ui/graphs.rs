@@ -33,14 +33,13 @@ pub fn render_graphs(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Three equal stacked rows, one sparkline each.
+    // Stacked equal rows, one sparkline each: util/power/temp always, plus an NPU activity row
+    // only on parts that have ever reported NPU activity (empty series → no NPU → omit the row).
+    let show_npu = !hist.npu_util.is_empty();
+    let n = if show_npu { 4 } else { 3 };
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Ratio(1, 3),
-            Constraint::Ratio(1, 3),
-            Constraint::Ratio(1, 3),
-        ])
+        .constraints(vec![Constraint::Ratio(1, n as u32); n])
         .split(inner);
 
     // Utilization is a percentage, so its scale is fixed at 0..=100 for a stable baseline; power
@@ -76,6 +75,19 @@ pub fn render_graphs(
         ),
         rows[2],
     );
+    if show_npu {
+        // Activity is a percentage → fixed 0..=100 scale, like utilization.
+        frame.render_widget(
+            sparkline(
+                npu_title(&hist.npu_util),
+                window(to_u64(&hist.npu_util), rows[3].width),
+                theme.accent,
+                theme.title,
+                Some(100),
+            ),
+            rows[3],
+        );
+    }
 }
 
 /// Fit a series to exactly `width` samples for a stable, right-anchored graph.
@@ -155,6 +167,13 @@ fn temp_title(h: &History<f64>) -> String {
     match h.latest() {
         Some(v) => format!("Temp {}°C", f64_to_u64(v)),
         None => "Temp n/a".to_string(),
+    }
+}
+
+fn npu_title(h: &History<f64>) -> String {
+    match h.latest() {
+        Some(v) => format!("NPU {}%", f64_to_u64(v)),
+        None => "NPU n/a".to_string(),
     }
 }
 
@@ -242,5 +261,31 @@ mod tests {
         let out = render(&GpuHistory::new(8));
         assert!(out.contains("History"));
         assert!(out.contains("n/a")); // no samples yet -> titles read n/a, no panic
+    }
+
+    #[test]
+    fn npu_sparkline_omitted_when_no_npu_samples() {
+        // `filled()` never pushes npu_util, mirroring a part without an NPU: the row is absent.
+        let out = render(&filled());
+        assert!(out.contains("Util"));
+        assert!(!out.contains("NPU"));
+    }
+
+    #[test]
+    fn npu_sparkline_shown_when_npu_samples_present() {
+        let mut h = filled();
+        for v in [0.0, 12.0, 88.0] {
+            h.npu_util.push(v);
+        }
+        let out = render(&h);
+        assert!(out.contains("NPU 88%")); // latest activity in the title
+    }
+
+    #[test]
+    fn npu_title_shows_latest_or_na() {
+        let mut h = History::new(4);
+        assert_eq!(npu_title(&h), "NPU n/a");
+        h.push(42.6);
+        assert_eq!(npu_title(&h), "NPU 43%");
     }
 }

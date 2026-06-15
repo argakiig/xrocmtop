@@ -70,7 +70,8 @@ fn parse_v3_0(b: &[u8]) -> Option<Metrics> {
     }
     let dram_reads = rd_u16(b, &mut p)?;
     let dram_writes = rd_u16(b, &mut p)?;
-    skip_u16(&mut p, 2); // average_ipu_reads/writes
+    let ipu_reads = rd_u16(b, &mut p)?; // average_ipu_reads (MB/s)
+    let ipu_writes = rd_u16(b, &mut p)?; // average_ipu_writes (MB/s)
 
     // -- Driver timestamp --
     let _system_clock_counter = rd_u64(b, &mut p)?;
@@ -87,8 +88,11 @@ fn parse_v3_0(b: &[u8]) -> Option<Metrics> {
     let stapm_power_limit = rd_u16(b, &mut p)?;
     let _current_stapm_power_limit = rd_u16(b, &mut p)?;
 
-    // -- Average clocks (MHz) -- GFX/fabric/memory clocks are shown by the Gauges panel.
-    skip_u16(&mut p, 8); // gfxclk, socclk, vpeclk, ipuclk, fclk, vclk, uclk, mpipu
+    // -- Average clocks (MHz) -- GFX/fabric/memory clocks are shown by the Gauges panel; only the
+    // NPU's ipuclk (4th entry) is surfaced here.
+    skip_u16(&mut p, 3); // gfxclk, socclk, vpeclk
+    let ipuclk = rd_u16(b, &mut p)?;
+    skip_u16(&mut p, 4); // fclk, vclk, uclk, mpipu
 
     // -- Current clocks (MHz) --
     let mut cpu_clk_max = 0u16; // peak across current_coreclk[16]
@@ -118,6 +122,9 @@ fn parse_v3_0(b: &[u8]) -> Option<Metrics> {
         cpu_core_c0,
         npu_activity_pct: activity(npu_activity),
         npu_power_w: watts_u16(ipu_power),
+        npu_clk_mhz: present(ipuclk), // 0 → "0 MHz" (present but idle); only 0xFFFF → n/a
+        npu_read_mbps: present(ipu_reads),
+        npu_write_mbps: present(ipu_writes),
         dram_read_mbps: present(dram_reads),
         dram_write_mbps: present(dram_writes),
         stapm_limit_w: watts_u16(stapm_power_limit),
@@ -235,9 +242,13 @@ mod tests {
             m.cpu_core_c0,
             vec![7, 21, 2, 1, 2, 3, 32, 5, 3, 3, 2, 2, 0, 1, 1, 5]
         );
-        // NPU (XDNA/IPU) idle on this dump: 0% activity, 0 W power (→ n/a).
+        // NPU (XDNA/IPU) idle on this dump: 0% activity, 0 W power (→ n/a), but clock and
+        // bandwidth are present-and-zero (0 is a valid reading, only 0xFFFF → n/a).
         assert_eq!(m.npu_activity_pct, Some(0));
         assert_eq!(m.npu_power_w, None);
+        assert_eq!(m.npu_clk_mhz, Some(0)); // ipuclk=0 → "0 MHz"
+        assert_eq!(m.npu_read_mbps, Some(0));
+        assert_eq!(m.npu_write_mbps, Some(0));
         // Unified-memory bandwidth in MB/s.
         assert_eq!(m.dram_read_mbps, Some(47791));
         assert_eq!(m.dram_write_mbps, Some(1463));

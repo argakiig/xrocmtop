@@ -103,6 +103,39 @@ fn once_json_omits_session_only_thermal_events() {
 }
 
 #[test]
+fn once_json_metrics_carry_npu_fields() {
+    // When a GPU exposes the decoded `gpu_metrics` block, it must carry the NPU telemetry keys
+    // (activity/power plus the added clock and read/write bandwidth). Machine-independent: only
+    // asserted on boxes that actually decode a metrics block.
+    let out = Command::new(BIN)
+        .args(["--once", "--json"])
+        .output()
+        .expect("run binary");
+    let json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(out.stdout).unwrap()).unwrap();
+    let Some(gpus) = json.get("gpus").and_then(|g| g.as_array()) else {
+        return;
+    };
+    for gpu in gpus {
+        let Some(metrics) = gpu.get("metrics").filter(|m| !m.is_null()) else {
+            continue; // no gpu_metrics node / unsupported revision on this box.
+        };
+        for key in [
+            "npu_activity_pct",
+            "npu_power_w",
+            "npu_clk_mhz",
+            "npu_read_mbps",
+            "npu_write_mbps",
+        ] {
+            assert!(
+                metrics.get(key).is_some(),
+                "metrics block missing NPU contract key `{key}`: {metrics}"
+            );
+        }
+    }
+}
+
+#[test]
 fn once_json_respects_no_procs_and_no_vulkan() {
     let out = Command::new(BIN)
         .args(["--once", "--json", "--no-procs", "--no-vulkan"])

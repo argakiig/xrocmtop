@@ -105,6 +105,13 @@ pub struct Metrics {
     pub npu_activity_pct: Opt<u16>,
     /// NPU (XDNA/IPU) power in watts.
     pub npu_power_w: Opt<f64>,
+    /// NPU (XDNA/IPU) clock in MHz, from `ipuclk`. `0` is a valid "present but idle" reading and
+    /// renders as `0 MHz`; only the `0xFFFF` sentinel renders as n/a.
+    pub npu_clk_mhz: Opt<u16>,
+    /// NPU (XDNA/IPU) memory read bandwidth in MB/s, from `average_ipu_reads`. `0` is a valid reading.
+    pub npu_read_mbps: Opt<u16>,
+    /// NPU (XDNA/IPU) memory write bandwidth in MB/s, from `average_ipu_writes`. `0` is a valid reading.
+    pub npu_write_mbps: Opt<u16>,
     /// Unified-memory read bandwidth in MB/s.
     pub dram_read_mbps: Opt<u16>,
     /// Unified-memory write bandwidth in MB/s.

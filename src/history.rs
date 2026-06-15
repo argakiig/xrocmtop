@@ -78,6 +78,9 @@ pub struct GpuHistory {
     pub power: History<f64>,
     /// Edge temperature in degrees Celsius.
     pub temp: History<f64>,
+    /// NPU (XDNA/IPU) activity percentage, 0..=100. Stays empty on parts without an NPU, which is
+    /// the signal the graphs panel uses to omit the NPU sparkline entirely.
+    pub npu_util: History<f64>,
 }
 
 impl GpuHistory {
@@ -87,6 +90,7 @@ impl GpuHistory {
             util: History::new(capacity),
             power: History::new(capacity),
             temp: History::new(capacity),
+            npu_util: History::new(capacity),
         }
     }
 }

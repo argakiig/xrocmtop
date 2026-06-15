@@ -270,6 +270,16 @@ impl App {
                 .push(carry(hist.util.latest(), snap.busy_pct.map(|p| p as f64)));
             hist.power.push(carry(hist.power.latest(), snap.power_w));
             hist.temp.push(carry(hist.temp.latest(), snap.temp_c));
+            // NPU activity is only tracked once the part has reported it at least once, so a
+            // part without an NPU keeps an empty series and the graphs panel omits its sparkline.
+            let npu = snap
+                .metrics
+                .as_ref()
+                .and_then(|m| m.npu_activity_pct)
+                .map(|p| p as f64);
+            if npu.is_some() || !hist.npu_util.is_empty() {
+                hist.npu_util.push(carry(hist.npu_util.latest(), npu));
+            }
         }
 
         if self.config.no_procs {
